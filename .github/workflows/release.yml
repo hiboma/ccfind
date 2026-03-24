@@ -33,7 +33,7 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Install cross
         if: matrix.use-cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        run: cargo install cross --git https://github.com/cross-rs/cross --tag v0.2.5
       - name: Build
         run: |
           if [ "${{ matrix.use-cross }}" = "true" ]; then
@@ -57,6 +57,11 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > checksums.sha256
       - uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
-          files: artifacts/*
+          files: |
+            artifacts/*

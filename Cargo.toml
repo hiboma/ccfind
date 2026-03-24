@@ -2,6 +2,7 @@
 name = "ccfind"
 version = "0.1.0"
 edition = "2021"
+authors = ["hiboma"]
 description = "Fuzzy finder for Claude Code named sessions"
 license = "MIT"
 repository = "https://github.com/hiboma/ccfind"

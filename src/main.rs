@@ -15,6 +15,7 @@ use rayon::prelude::*;
 use serde::Deserialize;
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_field_names)]
 struct Session {
     session_id: String,
     custom_title: String,
@@ -42,6 +43,9 @@ fn claude_projects_dir() -> PathBuf {
 /// 左から貪欲にディレクトリ名をマッチさせます。
 /// `-` は `/` または `.` にエンコードされるため、両方の候補を試します。
 fn decode_project_path(encoded: &str) -> Option<String> {
+    if encoded.is_empty() {
+        return None;
+    }
     let stripped = &encoded[1..];
     let parts: Vec<&str> = stripped.split('-').collect();
 
@@ -96,9 +100,8 @@ fn decode_project_path(encoded: &str) -> Option<String> {
 fn extract_sessions_from_file(path: &PathBuf, project_path: &str) -> Vec<(String, Session)> {
     let mut results = Vec::new();
 
-    let mut file = match fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return results,
+    let Ok(mut file) = fs::File::open(path) else {
+        return results;
     };
 
     let mut buf = Vec::new();
@@ -113,8 +116,7 @@ fn extract_sessions_from_file(path: &PathBuf, project_path: &str) -> Vec<(String
     let mut start = 0;
     while start < buf.len() {
         let end = memchr::memchr(b'\n', &buf[start..])
-            .map(|p| start + p)
-            .unwrap_or(buf.len());
+            .map_or(buf.len(), |p| start + p);
 
         let line = &buf[start..end];
 
@@ -156,8 +158,8 @@ fn scan_sessions() -> Vec<Session> {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .filter_map(|e| {
             let dir_name = e.file_name().to_string_lossy().to_string();
-            let project_dir = e.path();
-            let jsonl_files: Vec<PathBuf> = fs::read_dir(&project_dir)
+            let proj_dir = e.path();
+            let jsonl_files: Vec<PathBuf> = fs::read_dir(&proj_dir)
                 .ok()?
                 .flatten()
                 .filter(|jf| {
@@ -245,7 +247,7 @@ fn run_interactive(sessions: &[Session]) -> Option<&Session> {
     loop {
         let visible_count = filtered.len().min(max_visible);
         write!(stdout, "\r\x1b[J").ok();
-        write!(stdout, "\x1b[36m> \x1b[0m{}\r\n", query).ok();
+        write!(stdout, "\x1b[36m> \x1b[0m{query}\r\n").ok();
         write!(
             stdout,
             "\x1b[90m  {}/{} sessions\x1b[0m\r\n",
@@ -276,7 +278,7 @@ fn run_interactive(sessions: &[Session]) -> Option<&Session> {
         stdout.flush().ok();
 
         let lines_drawn = 2 + visible_count;
-        write!(stdout, "\x1b[{}A", lines_drawn).ok();
+        write!(stdout, "\x1b[{lines_drawn}A").ok();
         stdout.flush().ok();
 
         if let Ok(Event::Key(key)) = event::read() {
@@ -296,9 +298,7 @@ fn run_interactive(sessions: &[Session]) -> Option<&Session> {
                     }
                 }
                 (KeyCode::Up, _) | (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
-                    if selected > 0 {
-                        selected -= 1;
-                    }
+                    selected = selected.saturating_sub(1);
                 }
                 (KeyCode::Down, _) | (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
                     if selected + 1 < filtered.len().min(max_visible) {
@@ -332,7 +332,7 @@ fn exec_session(session: &Session) -> ! {
         .arg(&session.session_id)
         .exec();
 
-    eprintln!("claude の起動に失敗しました: {}", err);
+    eprintln!("claude の起動に失敗しました: {err}");
     std::process::exit(1);
 }
 
@@ -364,7 +364,13 @@ fn main() {
 }
 
 fn shell_escape(s: &str) -> String {
-    if s.contains(' ') || s.contains('\'') || s.contains('"') || s.contains('\\') {
+    if s.contains(' ')
+        || s.contains('\'')
+        || s.contains('"')
+        || s.contains('\\')
+        || s.contains('\n')
+        || s.contains('\0')
+    {
         format!("'{}'", s.replace('\'', "'\\''"))
     } else {
         s.to_string()
@@ -495,5 +501,71 @@ mod tests {
         let sessions: Vec<Session> = vec![];
         let result = fuzzy_filter(&sessions, "anything");
         assert!(result.is_empty());
+    }
+
+    // --- decode_project_path empty string guard ---
+
+    #[test]
+    fn decode_project_path_returns_none_for_empty_string() {
+        assert_eq!(decode_project_path(""), None);
+    }
+
+    // --- shell_escape newline and null byte ---
+
+    #[test]
+    fn shell_escape_with_newline() {
+        assert_eq!(shell_escape("hello\nworld"), "'hello\nworld'");
+    }
+
+    #[test]
+    fn shell_escape_with_null_byte() {
+        assert_eq!(shell_escape("hello\0world"), "'hello\0world'");
+    }
+
+    // --- extract_sessions_from_file ---
+
+    fn write_temp_file(name: &str, content: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("ccfind_test_{name}"));
+        std::fs::write(&path, content).expect("テンポラリファイルの書き込みに失敗しました");
+        path
+    }
+
+    #[test]
+    fn extract_sessions_from_file_parses_custom_title() {
+        let content = r#"{"type":"custom-title","customTitle":"my session","sessionId":"sid-001"}"#;
+        let path = write_temp_file("parse_ok.jsonl", content);
+        let results = extract_sessions_from_file(&path, "/tmp/project");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "sid-001");
+        assert_eq!(results[0].1.custom_title, "my session");
+        assert_eq!(results[0].1.project_path, "/tmp/project");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn extract_sessions_from_file_ignores_invalid_json() {
+        let content = "not valid json\n{\"type\":\"custom-title\",\"customTitle\":\"ok\",\"sessionId\":\"sid-002\"}\n{broken";
+        let path = write_temp_file("invalid_json.jsonl", content);
+        let results = extract_sessions_from_file(&path, "/tmp");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "sid-002");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn extract_sessions_from_file_empty_file() {
+        let path = write_temp_file("empty.jsonl", "");
+        let results = extract_sessions_from_file(&path, "/tmp");
+        assert!(results.is_empty());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn extract_sessions_from_file_ignores_other_types() {
+        let content = r#"{"type":"summary","customTitle":"ignored","sessionId":"sid-003"}"#;
+        let path = write_temp_file("other_type.jsonl", content);
+        let results = extract_sessions_from_file(&path, "/tmp");
+        assert!(results.is_empty());
+        std::fs::remove_file(&path).ok();
     }
 }
