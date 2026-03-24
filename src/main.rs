@@ -370,3 +370,130 @@ fn shell_escape(s: &str) -> String {
         s.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- decode_project_path ---
+
+    #[test]
+    fn decode_project_path_returns_none_for_nonexistent_path() {
+        let result = decode_project_path("-Users-nobody-nonexistent-dir-xyz");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn decode_project_path_returns_none_for_deep_nonexistent_path() {
+        let result = decode_project_path("-tmp-this-path-does-not-exist-at-all");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn decode_project_path_handles_double_hyphen() {
+        // Double hyphen produces an empty part which should be skipped
+        let result = decode_project_path("-Users--nobody--fake");
+        assert_eq!(result, None);
+    }
+
+    // --- shell_escape ---
+
+    #[test]
+    fn shell_escape_plain_string() {
+        assert_eq!(shell_escape("hello"), "hello");
+    }
+
+    #[test]
+    fn shell_escape_no_special_chars() {
+        assert_eq!(shell_escape("/usr/local/bin"), "/usr/local/bin");
+    }
+
+    #[test]
+    fn shell_escape_with_spaces() {
+        assert_eq!(shell_escape("hello world"), "'hello world'");
+    }
+
+    #[test]
+    fn shell_escape_with_single_quotes() {
+        assert_eq!(shell_escape("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn shell_escape_with_backslash() {
+        assert_eq!(shell_escape("back\\slash"), "'back\\slash'");
+    }
+
+    #[test]
+    fn shell_escape_with_double_quotes() {
+        assert_eq!(shell_escape("say \"hi\""), "'say \"hi\"'");
+    }
+
+    // --- fuzzy_filter ---
+
+    #[test]
+    fn fuzzy_filter_empty_query_returns_all() {
+        let sessions = vec![
+            Session {
+                session_id: "a".to_string(),
+                custom_title: "alpha".to_string(),
+                project_path: "/tmp".to_string(),
+            },
+            Session {
+                session_id: "b".to_string(),
+                custom_title: "beta".to_string(),
+                project_path: "/tmp".to_string(),
+            },
+        ];
+        let result = fuzzy_filter(&sessions, "");
+        assert_eq!(result.len(), 2);
+        // All scores should be 0 for empty query
+        assert!(result.iter().all(|&(_, score)| score == 0));
+    }
+
+    #[test]
+    fn fuzzy_filter_matching_query() {
+        let sessions = vec![
+            Session {
+                session_id: "1".to_string(),
+                custom_title: "refactor auth module".to_string(),
+                project_path: "/tmp/project".to_string(),
+            },
+            Session {
+                session_id: "2".to_string(),
+                custom_title: "fix database bug".to_string(),
+                project_path: "/tmp/project".to_string(),
+            },
+            Session {
+                session_id: "3".to_string(),
+                custom_title: "auth token renewal".to_string(),
+                project_path: "/tmp/project".to_string(),
+            },
+        ];
+        let result = fuzzy_filter(&sessions, "auth");
+        // "auth" should match sessions 0 and 2
+        assert_eq!(result.len(), 2);
+        let indices: Vec<usize> = result.iter().map(|&(i, _)| i).collect();
+        assert!(indices.contains(&0));
+        assert!(indices.contains(&2));
+    }
+
+    #[test]
+    fn fuzzy_filter_no_match_returns_empty() {
+        let sessions = vec![
+            Session {
+                session_id: "1".to_string(),
+                custom_title: "hello".to_string(),
+                project_path: "/tmp".to_string(),
+            },
+        ];
+        let result = fuzzy_filter(&sessions, "zzzznotfound");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn fuzzy_filter_empty_sessions() {
+        let sessions: Vec<Session> = vec![];
+        let result = fuzzy_filter(&sessions, "anything");
+        assert!(result.is_empty());
+    }
+}
